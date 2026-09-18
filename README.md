@@ -2,163 +2,209 @@
 
 An LLM-assisted 24-hour energy optimization API developed for the **BUP CSE Fest 2026 Hackathon**.
 
-GridWise converts natural-language campus operator notes into structured, machine-checkable energy directives using a language-capable generative model. The validated directives are then applied to a mathematical optimization model that produces a valid low-cost 24-hour electricity schedule.
+GridWise receives a 24-hour smart-campus energy scenario together with 1–3 natural-language operator notes. A language-capable generative model interprets those notes into structured energy directives. Deterministic guardrails validate the interpretation, and a linear-programming optimizer produces a valid low-cost 24-hour schedule.
+
+The system is designed around the official GridWise challenge contract: understand the operator note, validate the structured directive, apply it to the optimization model, return a valid 24-hour schedule, and minimize grid electricity cost.
 
 ---
 
-## 1. Problem Overview
+## 1. Live Deployment
 
-The system models a smart campus using:
+### Production API
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com
+```
+
+### Health Endpoint
+
+```text
+GET /health
+```
+
+Full URL:
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### Optimization Endpoint
+
+```text
+POST /optimize-energy
+```
+
+Full URL:
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com/optimize-energy
+```
+
+---
+
+## 2. Problem Overview
+
+GridWise models a smart campus that uses:
 
 - Grid electricity
 - Rooftop solar generation
 - Battery energy storage
 - Time-varying electricity demand
-- Time-varying electricity tariffs
+- Time-varying grid tariffs
 - Natural-language operator instructions
 
-For every scenario, the system receives:
+For every scenario, the service receives:
 
-1. A 24-hour demand profile
-2. A 24-hour solar availability profile
-3. A 24-hour grid tariff profile
+1. A unique scenario ID
+2. 1–3 natural-language operator notes
+3. Exactly 24 hourly entries
 4. Battery specifications
-5. 1–3 natural-language operator notes
 
-The system must:
+The service must:
 
-1. Understand every operator note using an LLM
+1. Interpret every operator note using an LLM
 2. Convert each note into one supported directive
-3. Deterministically validate the LLM output
-4. Apply all valid directives to the optimization model
-5. Generate a valid 24-hour energy schedule
-6. Minimize total grid electricity cost
-7. Return both the structured interpretation and final schedule
+3. Mark irrelevant notes as `no_op`
+4. Deterministically validate the LLM output
+5. Apply valid directives to the optimization model
+6. Generate a valid 24-hour energy schedule
+7. Minimize total grid electricity cost
+8. Recalculate and return the final schedule totals
 
-The LLM is therefore part of the actual optimization path, rather than being used only for explanation or documentation.
+The LLM is part of the actual operator-note interpretation path. It is not used only for `plan_summary` or documentation.
 
 ---
 
-## 2. Solution Architecture
+## 3. Solution Architecture
 
 ```text
-                  ┌─────────────────────────┐
-                  │   POST /optimize-energy │
-                  │                         │
-                  │  Scenario + Operator    │
-                  │       Notes             │
-                  └────────────┬────────────┘
-                               │
-                               ▼
-                  ┌─────────────────────────┐
-                  │   LLM Interpretation    │
-                  │                         │
-                  │ Groq + Qwen 3.8 27B     │
-                  │ Structured JSON output  │
-                  └────────────┬────────────┘
-                               │
-                               ▼
-                  ┌─────────────────────────┐
-                  │ Deterministic Guardrails│
-                  │                         │
-                  │ - Directive type        │
-                  │ - note_index            │
-                  │ - applies semantics     │
-                  │ - hour validation       │
-                  │ - numeric validation    │
-                  │ - adjustment shape      │
-                  └────────────┬────────────┘
-                               │
-                               ▼
-                  ┌─────────────────────────┐
-                  │    Optimization Model   │
-                  │                         │
-                  │       SciPy LP           │
-                  │       linprog            │
-                  │                         │
-                  │ Minimize grid cost      │
-                  │ subject to constraints  │
-                  └────────────┬────────────┘
-                               │
-                               ▼
-                  ┌─────────────────────────┐
-                  │ Independent Validation  │
-                  │                         │
-                  │ Energy balance          │
-                  │ Battery limits          │
-                  │ Directive compliance    │
-                  │ Cost recalculation      │
-                  │ End-of-day neutrality   │
-                  └────────────┬────────────┘
-                               │
-                               ▼
-                  ┌─────────────────────────┐
-                  │     JSON Response       │
-                  │                         │
-                  │ Interpretation + Plan   │
-                  └─────────────────────────┘
+                    ┌──────────────────────────────┐
+                    │   POST /optimize-energy      │
+                    │                              │
+                    │ Scenario + Operator Notes    │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │      LLM Interpretation      │
+                    │                              │
+                    │ Groq                         │
+                    │ Qwen 3.8 27B                │
+                    │ Structured JSON              │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   Deterministic Guardrails   │
+                    │                              │
+                    │ • Directive type             │
+                    │ • note_index order           │
+                    │ • applies semantics          │
+                    │ • hour validation            │
+                    │ • numeric validation         │
+                    │ • adjustment structure       │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │     Linear Optimization      │
+                    │                              │
+                    │ SciPy scipy.optimize.linprog │
+                    │                              │
+                    │ Minimize grid electricity    │
+                    │ cost under all constraints   │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │    Independent Validation    │
+                    │                              │
+                    │ • Energy balance             │
+                    │ • Solar limits               │
+                    │ • Battery limits             │
+                    │ • Directive windows          │
+                    │ • Grid caps                  │
+                    │ • End-of-day neutrality      │
+                    │ • Total recalculation        │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │        JSON Response         │
+                    │                              │
+                    │ Interpretation + 24h Plan    │
+                    └──────────────────────────────┘
 ```
 
-### Core design principle
+### Core execution path
 
 ```text
-Natural Language
-       ↓
-      LLM
-       ↓
+Natural-Language Operator Note
+              ↓
+             LLM
+              ↓
 Structured Directive
-       ↓
+              ↓
 Deterministic Validation
-       ↓
+              ↓
 Optimization Constraints
-       ↓
+              ↓
 24-Hour Schedule
-       ↓
+              ↓
 Independent Validation
+              ↓
+Final JSON Response
 ```
-
-Human-language instructions are never directly trusted as mathematical constraints. They are first converted into structured data and validated before being applied.
 
 ---
 
-## 3. Supported Operator Directives
+## 4. Supported Operator Directives
 
-The system supports the following directive types.
+GridWise supports exactly these directive types:
 
 | Directive | Meaning | Structured Adjustment |
 |---|---|---|
 | `solar_reduction` | Reduce usable solar during selected hours | `{"hours":[...], "factor": number}` |
 | `minimum_battery_reserve` | Keep battery energy above a required level | `{"hours":[...], "minimum_energy_kwh": number}` |
-| `no_charge_window` | Charging is not allowed during selected hours | `{"hours":[...]}` |
-| `no_discharge_window` | Discharging is not allowed during selected hours | `{"hours":[...]}` |
-| `max_grid_window` | Limit grid import during selected hours | `{"hours":[...], "max_grid_kwh": number}` |
-| `no_op` | Note does not affect the current energy schedule | `null` |
+| `no_charge_window` | Battery charging is unavailable during selected hours | `{"hours":[...]}` |
+| `no_discharge_window` | Battery discharging is unavailable during selected hours | `{"hours":[...]}` |
+| `max_grid_window` | Grid import may not exceed a stated value during selected hours | `{"hours":[...], "max_grid_kwh": number}` |
+| `no_op` | The note does not affect the current 24-hour schedule | `null` |
 
-### Important semantics
+### Time-window convention
 
-Time windows use whole-hour intervals with:
+Time windows use whole-hour intervals.
 
-- start hour included
-- end hour excluded
+The start hour is included and the end hour is excluded.
 
-For example:
+Example:
 
 ```text
 1 PM to 3 PM
 ```
 
-maps to:
+becomes:
 
 ```json
 [13, 14]
 ```
 
-For `solar_reduction`, the factor represents the fraction of solar that remains usable.
+### Solar reduction convention
+
+For `solar_reduction`, `factor` means the usable fraction that remains.
 
 Example:
 
 ```text
-80% solar reduction
+80% reduction
 ```
 
 means:
@@ -173,11 +219,13 @@ because 20% of the original solar remains usable.
 
 ---
 
-## 4. LLM Layer
+## 5. LLM Layer
 
 ### Provider
 
-**Groq**
+```text
+Groq
+```
 
 ### Model
 
@@ -185,23 +233,13 @@ because 20% of the original solar remains usable.
 qwen/qwen3.8-27b
 ```
 
-### SDK
+### Client
 
-The implementation uses the OpenAI-compatible Python client with the Groq OpenAI-compatible API endpoint.
-
-The environment variable is intentionally named:
-
-```text
-OPENAI_API_KEY
-```
-
-for SDK compatibility, but the value should be a **Groq API key**.
+The implementation uses the OpenAI-compatible Python SDK with the Groq OpenAI-compatible API endpoint.
 
 ### LLM responsibility
 
-The LLM is responsible for interpreting the natural-language `operator_notes` into structured directives.
-
-For each note, the LLM must produce:
+For every operator note, the model produces:
 
 - `note_index`
 - `applies`
@@ -209,35 +247,31 @@ For each note, the LLM must produce:
 - `structured_adjustment`
 - `explanation`
 
-The structured interpretation is then deterministically validated before reaching the optimizer.
+The structured result becomes input to the deterministic validation layer and, when valid, to the optimizer.
 
-### What the LLM does NOT control
+### The LLM does not directly control
 
-The LLM does not directly decide:
+The model does not invent or directly choose:
 
 - demand values
-- solar values
+- solar availability
 - tariffs
 - battery capacity
-- battery rates
-- final grid imports
-- final charge/discharge values
-- optimization objective
+- battery limits
+- final grid import
+- final charge/discharge amounts
 - unsupported directive types
+- optimization objective
 
-Those values come from the scenario or deterministic application logic.
+These are supplied by the scenario or determined by deterministic application logic.
 
 ---
 
-## 5. Deterministic Guardrails
+## 6. Deterministic Guardrails
 
-LLM output is treated as untrusted structured data.
+LLM output is treated as untrusted structured data until deterministic validation succeeds.
 
-Before applying any directive, the application validates:
-
-### Directive type
-
-Must be one of:
+### Allowed directive types
 
 ```text
 solar_reduction
@@ -252,7 +286,7 @@ no_op
 
 Every operator note must produce exactly one interpretation entry.
 
-Entries must remain in:
+The entries must be returned in:
 
 ```text
 0, 1, 2, ...
@@ -262,7 +296,7 @@ Entries must remain in:
 
 ### Applies semantics
 
-For every applicable directive:
+For applicable directives:
 
 ```json
 "applies": true
@@ -274,37 +308,31 @@ For `no_op`:
 "applies": false
 ```
 
-`no_op` is the only directive allowed to use:
+Only `no_op` may use `applies = false`.
 
-```json
-"applies": false
-```
+### Hours
 
-### Hour validation
-
-All hour arrays must contain:
+Every `hours` array is validated to contain:
 
 - integers
 - values from `0` through `23`
 - unique values
 - ascending order
 
-### Numeric validation
+### Numeric values
 
-Relevant numeric values are checked for:
+Numeric values are checked for:
 
-- correct type
+- numeric type
 - finite values
-- valid ranges
+- valid range
 - directive-specific constraints
 
-### Structured adjustment validation
+### Structured adjustment
 
-The structure must match the selected directive.
+The adjustment shape must match the selected directive.
 
-Examples:
-
-#### Solar reduction
+#### `solar_reduction`
 
 ```json
 {
@@ -313,7 +341,7 @@ Examples:
 }
 ```
 
-#### Battery reserve
+#### `minimum_battery_reserve`
 
 ```json
 {
@@ -322,7 +350,7 @@ Examples:
 }
 ```
 
-#### No charging
+#### `no_charge_window`
 
 ```json
 {
@@ -330,7 +358,7 @@ Examples:
 }
 ```
 
-#### No discharging
+#### `no_discharge_window`
 
 ```json
 {
@@ -338,7 +366,7 @@ Examples:
 }
 ```
 
-#### Grid cap
+#### `max_grid_window`
 
 ```json
 {
@@ -347,7 +375,7 @@ Examples:
 }
 ```
 
-#### No-op
+#### `no_op`
 
 ```json
 null
@@ -355,9 +383,9 @@ null
 
 ---
 
-## 6. Optimization Model
+## 7. Optimization Model
 
-The final scheduling problem is formulated as a linear program.
+The scheduling problem is formulated as a linear program.
 
 ### Objective
 
@@ -368,7 +396,7 @@ total_cost_bdt =
     Σ(grid_kwh[h] × tariff_bdt_per_kwh[h])
 ```
 
-for:
+for hours:
 
 ```text
 h = 0 ... 23
@@ -376,7 +404,7 @@ h = 0 ... 23
 
 ### Decision variables
 
-For each hour:
+For every hour:
 
 - `grid_kwh`
 - `solar_used_kwh`
@@ -386,7 +414,7 @@ For each hour:
 
 ### Energy balance
 
-For each hour:
+For every hour:
 
 ```text
 grid_kwh + solar_used_kwh + discharge_kwh
@@ -406,7 +434,7 @@ battery_energy_before[h]
 - discharge_kwh[h]
 ```
 
-For hour `0`, the initial battery energy is used as the starting state.
+Hour `0` starts from `initial_energy_kwh`.
 
 ### Battery bounds
 
@@ -414,34 +442,28 @@ At every hour:
 
 ```text
 minimum_energy_kwh
-<=
+≤
 battery_energy_after_kwh
-<=
+≤
 capacity_kwh
 ```
 
-### Charge limit
+### Charging rate
 
 ```text
-charge_kwh[h]
-<=
-max_charge_kwh_per_hour
+charge_kwh[h] ≤ max_charge_kwh_per_hour
 ```
 
-### Discharge limit
+### Discharging rate
 
 ```text
-discharge_kwh[h]
-<=
-max_discharge_kwh_per_hour
+discharge_kwh[h] ≤ max_discharge_kwh_per_hour
 ```
 
 ### Solar availability
 
 ```text
-solar_used_kwh[h]
-<=
-effective_solar_kwh[h]
+solar_used_kwh[h] ≤ effective_solar_kwh[h]
 ```
 
 where:
@@ -449,12 +471,12 @@ where:
 ```text
 effective_solar_kwh[h]
 =
-solar_kwh[h] × applicable solar factor
+solar_kwh[h] × applicable_solar_factor
 ```
 
 ### End-of-day neutrality
 
-The final battery energy must equal the initial battery energy:
+The final battery state equals the initial battery state:
 
 ```text
 battery_energy_after[23]
@@ -462,34 +484,36 @@ battery_energy_after[23]
 initial_energy_kwh
 ```
 
-This prevents the optimizer from obtaining artificially low costs by simply consuming stored battery energy without restoring it.
+This prevents the optimizer from reducing cost by consuming the starting battery energy without restoring it.
 
 ---
 
-## 7. Directive Application
+## 8. Directive Application to the Optimizer
 
-After deterministic validation, directives are translated directly into optimizer constraints.
+After validation, directives are translated into deterministic optimization constraints.
 
 ### `solar_reduction`
 
 ```text
-effective_solar[h] = original_solar[h] × factor
+effective_solar[h]
+=
+original_solar[h] × factor
 ```
 
-for every affected hour.
+for affected hours.
 
 ### `minimum_battery_reserve`
 
 ```text
 battery_energy_after[h]
->=
+≥
 max(
     base_minimum_energy,
     directive_minimum_energy
 )
 ```
 
-for every affected hour.
+for affected hours.
 
 ### `no_charge_window`
 
@@ -510,7 +534,7 @@ for affected hours.
 ### `max_grid_window`
 
 ```text
-grid[h] <= max_grid_kwh
+grid[h] ≤ max_grid_kwh
 ```
 
 for affected hours.
@@ -521,10 +545,153 @@ No optimization constraint is added.
 
 ---
 
-## 8. Project Structure
+## 9. Independent Final Validation
+
+The generated plan is independently checked before the response is returned.
+
+The validation layer verifies:
 
 ```text
-GridWise/
+Exactly 24 unique hours
+        +
+Hours 0–23
+        +
+Non-negative numeric values
+        +
+Energy balance for every hour
+        +
+Effective solar limit
+        +
+Battery capacity
+        +
+Battery minimum reserve
+        +
+Charge rate limit
+        +
+Discharge rate limit
+        +
+No-charge windows
+        +
+No-discharge windows
+        +
+Grid-cap windows
+        +
+Battery state transitions
+        +
+End-of-day neutrality
+        +
+Recalculated total grid
+        +
+Recalculated total cost
+        +
+Recalculated peak grid
+```
+
+This makes the returned `hourly_plan` independently machine-checkable.
+
+---
+
+## 10. API Contract
+
+### `GET /health`
+
+Returns:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### `POST /optimize-energy`
+
+Accepts one scenario object.
+
+Required top-level fields:
+
+```text
+scenario_id
+operator_notes
+hours
+battery
+```
+
+### Hour fields
+
+Each hour entry contains:
+
+```text
+hour
+demand_kwh
+solar_kwh
+tariff_bdt_per_kwh
+```
+
+Exactly 24 hours are required, covering `0` through `23`.
+
+### Battery fields
+
+```text
+capacity_kwh
+initial_energy_kwh
+minimum_energy_kwh
+max_charge_kwh_per_hour
+max_discharge_kwh_per_hour
+```
+
+### Response fields
+
+A successful response contains:
+
+```text
+scenario_id
+directive_interpretation
+hourly_plan
+total_grid_kwh
+total_cost_bdt
+peak_grid_kwh
+plan_summary
+```
+
+### Directive interpretation fields
+
+Each interpretation entry contains:
+
+```text
+note_index
+applies
+directive_type
+structured_adjustment
+explanation
+```
+
+### Hourly plan fields
+
+Each hourly plan entry contains:
+
+```text
+hour
+grid_kwh
+solar_used_kwh
+battery_action
+battery_kwh
+battery_energy_after_kwh
+```
+
+Allowed `battery_action` values:
+
+```text
+charge
+discharge
+idle
+```
+
+---
+
+## 11. Project Structure
+
+```text
+gridwise-llm-optimizer/
 │
 ├── app/
 │   ├── __init__.py
@@ -534,19 +701,20 @@ GridWise/
 │   └── optimizer.py
 │
 ├── .dockerignore
-├── .gitignore
 ├── .env.example
+├── .gitignore
+├── .python-version
 ├── Dockerfile
 ├── README.md
 ├── requirements.txt
 │
-├── test_runner.py
 ├── debug_llm.py
+├── test_runner.py
 │
 └── BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json
 ```
 
-### Main components
+### Component responsibilities
 
 #### `app/main.py`
 
@@ -559,20 +727,20 @@ GET  /health
 POST /optimize-energy
 ```
 
-Also performs final independent validation before returning the result.
+The main pipeline also performs final schedule validation and recalculates response totals.
 
 #### `app/schemas.py`
 
-Contains Pydantic request and response models.
+Pydantic request and response models.
 
-Responsible for structural validation of:
+Handles structural validation for:
 
-- request payload
-- battery specification
+- request payloads
 - hourly data
+- battery data
 - directive interpretation
-- hourly plan
-- final response
+- hourly plans
+- final responses
 
 #### `app/llm_parser.py`
 
@@ -581,47 +749,69 @@ Handles:
 - LLM client initialization
 - prompt construction
 - structured JSON interpretation
-- output parsing
-- deterministic directive validation
+- parsing
+- deterministic validation
 - retry handling
 - interpretation caching
 
 #### `app/optimizer.py`
 
-Contains the mathematical scheduling engine using:
+Contains the mathematical energy scheduler using:
 
 ```text
-SciPy scipy.optimize.linprog
+scipy.optimize.linprog
 ```
 
 #### `test_runner.py`
 
-Runs the public sample cases against the API and checks:
+Runs the official public sample cases against a configurable API base URL.
 
-- directive interpretation
+It validates:
+
+- interpretation semantics
 - directive application
 - energy balance
 - battery transitions
-- battery limits
 - solar limits
-- charge/discharge windows
+- reserve constraints
+- charge/discharge limits
+- operator windows
 - grid caps
 - end-of-day neutrality
 - recalculated totals
-- expected public-case cost
+- public-case optimization cost
 
 #### `debug_llm.py`
 
-Development utility for checking only the LLM interpretation layer against the public sample semantics.
+Development-only utility for checking the LLM interpretation layer against public sample semantics.
 
 ---
 
-## 9. Requirements
+## 12. Technology Stack
 
-The project uses:
+| Component | Technology |
+|---|---|
+| API framework | FastAPI |
+| Language | Python 3.11 |
+| Data validation | Pydantic |
+| LLM provider | Groq |
+| LLM model | Qwen 3.8 27B |
+| LLM client | OpenAI-compatible Python SDK |
+| Optimization | SciPy `linprog` |
+| Numerical computing | NumPy |
+| HTTP testing | Requests |
+| ASGI server | Uvicorn |
+| Containerization | Docker |
+| Deployment | Render |
+
+---
+
+## 13. Requirements
+
+Python version:
 
 ```text
-Python 3.11
+3.11
 ```
 
 Main dependencies:
@@ -637,7 +827,7 @@ openai==1.14.0
 httpx==0.27.2
 ```
 
-Install everything using:
+Install with:
 
 ```bash
 pip install -r requirements.txt
@@ -645,11 +835,19 @@ pip install -r requirements.txt
 
 ---
 
-## 10. Environment Variables
+## 14. Environment Variables
 
-Create a local `.env` file or configure environment variables through the deployment platform.
+The service uses the following environment variables:
 
-Required/available variables:
+| Variable | Purpose | Example |
+|---|---|---|
+| `OPENAI_API_KEY` | Groq API key used through the OpenAI-compatible client | `your_groq_api_key_here` |
+| `GROQ_MODEL` | LLM model identifier | `qwen/qwen3.8-27b` |
+| `LLM_TIMEOUT_SECONDS` | LLM request timeout | `15` |
+| `LLM_MAX_OUTPUT_TOKENS` | Maximum generated output tokens | `300` |
+| `LLM_MAX_ATTEMPTS` | Maximum interpretation attempts | `3` |
+
+### Example `.env`
 
 ```text
 OPENAI_API_KEY=your_groq_api_key_here
@@ -659,50 +857,20 @@ LLM_MAX_OUTPUT_TOKENS=300
 LLM_MAX_ATTEMPTS=3
 ```
 
-### Variable description
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `OPENAI_API_KEY` | Groq API key used through the OpenAI-compatible client | `your_groq_api_key_here` |
-| `GROQ_MODEL` | LLM model identifier | `qwen/qwen3.8-27b` |
-| `LLM_TIMEOUT_SECONDS` | Maximum LLM request timeout | `15` |
-| `LLM_MAX_OUTPUT_TOKENS` | Maximum generated output tokens | `300` |
-| `LLM_MAX_ATTEMPTS` | Maximum interpretation attempts | `3` |
-
-### Security
-
-Never commit an actual API key.
-
-Do not put secrets inside:
-
-- source code
-- `.env`
-- README
-- Docker image
-- Git history
-- API responses
-- logs
-
-Use:
-
-```text
-.env.example
-```
-
-for documenting variable names only.
+Never commit a real API key.
 
 ---
 
-## 11. Local Setup
+## 15. Local Setup
 
-### 11.1 Clone the repository
+### Clone
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
-cd GridWise
+cd gridwise-llm-optimizer
 ```
 
-### 11.2 Create virtual environment
+### Create a virtual environment
 
 Windows:
 
@@ -718,49 +886,35 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-### 11.3 Install dependencies
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 11.4 Configure environment
+### Configure environment
 
-Create:
+Create `.env` or export the required environment variables.
 
-```text
-.env
-```
-
-and configure the required variables.
-
-Example:
-
-```text
-OPENAI_API_KEY=your_groq_api_key_here
-GROQ_MODEL=qwen/qwen3.8-27b
-LLM_TIMEOUT_SECONDS=15
-LLM_MAX_OUTPUT_TOKENS=300
-LLM_MAX_ATTEMPTS=3
-```
+Do not commit `.env`.
 
 ---
 
-## 12. Run the API Locally
+## 16. Run Locally
 
-Start the FastAPI application with:
+Start the API:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-For development with automatic reload:
+For development:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The service will be available at:
+The local service runs at:
 
 ```text
 http://localhost:8000
@@ -768,15 +922,13 @@ http://localhost:8000
 
 ---
 
-## 13. Health Check
-
-### Request
+## 17. Local Health Test
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### Expected response
+Expected:
 
 ```json
 {
@@ -784,28 +936,11 @@ curl http://localhost:8000/health
 }
 ```
 
-The endpoint is intentionally lightweight and does not require an optimization request.
-
 ---
 
-## 14. API Endpoint
+## 18. API Request Example
 
-### `POST /optimize-energy`
-
-Accepts one 24-hour scenario and returns:
-
-- directive interpretation
-- final hourly schedule
-- total grid usage
-- total grid cost
-- peak grid usage
-- strategy summary
-
----
-
-## 15. Request Schema
-
-Example:
+A representative request is:
 
 ```json
 {
@@ -821,146 +956,9 @@ Example:
       "demand_kwh": 180,
       "solar_kwh": 0,
       "tariff_bdt_per_kwh": 7
-    },
-    {
-      "hour": 1,
-      "demand_kwh": 175,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 7
-    },
-    {
-      "hour": 2,
-      "demand_kwh": 170,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 7
-    },
-    {
-      "hour": 3,
-      "demand_kwh": 165,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 7
-    },
-    {
-      "hour": 4,
-      "demand_kwh": 160,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 7
-    },
-    {
-      "hour": 5,
-      "demand_kwh": 165,
-      "solar_kwh": 5,
-      "tariff_bdt_per_kwh": 8
-    },
-    {
-      "hour": 6,
-      "demand_kwh": 170,
-      "solar_kwh": 20,
-      "tariff_bdt_per_kwh": 9
-    },
-    {
-      "hour": 7,
-      "demand_kwh": 180,
-      "solar_kwh": 40,
-      "tariff_bdt_per_kwh": 10
-    },
-    {
-      "hour": 8,
-      "demand_kwh": 200,
-      "solar_kwh": 70,
-      "tariff_bdt_per_kwh": 11
-    },
-    {
-      "hour": 9,
-      "demand_kwh": 220,
-      "solar_kwh": 100,
-      "tariff_bdt_per_kwh": 12
-    },
-    {
-      "hour": 10,
-      "demand_kwh": 230,
-      "solar_kwh": 130,
-      "tariff_bdt_per_kwh": 12
-    },
-    {
-      "hour": 11,
-      "demand_kwh": 240,
-      "solar_kwh": 150,
-      "tariff_bdt_per_kwh": 13
-    },
-    {
-      "hour": 12,
-      "demand_kwh": 250,
-      "solar_kwh": 160,
-      "tariff_bdt_per_kwh": 13
-    },
-    {
-      "hour": 13,
-      "demand_kwh": 255,
-      "solar_kwh": 170,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 14,
-      "demand_kwh": 260,
-      "solar_kwh": 165,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 15,
-      "demand_kwh": 255,
-      "solar_kwh": 150,
-      "tariff_bdt_per_kwh": 13
-    },
-    {
-      "hour": 16,
-      "demand_kwh": 250,
-      "solar_kwh": 130,
-      "tariff_bdt_per_kwh": 13
-    },
-    {
-      "hour": 17,
-      "demand_kwh": 245,
-      "solar_kwh": 100,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 18,
-      "demand_kwh": 240,
-      "solar_kwh": 60,
-      "tariff_bdt_per_kwh": 15
-    },
-    {
-      "hour": 19,
-      "demand_kwh": 235,
-      "solar_kwh": 30,
-      "tariff_bdt_per_kwh": 15
-    },
-    {
-      "hour": 20,
-      "demand_kwh": 230,
-      "solar_kwh": 15,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 21,
-      "demand_kwh": 220,
-      "solar_kwh": 5,
-      "tariff_bdt_per_kwh": 12
-    },
-    {
-      "hour": 22,
-      "demand_kwh": 205,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 10
-    },
-    {
-      "hour": 23,
-      "demand_kwh": 190,
-      "solar_kwh": 0,
-      "tariff_bdt_per_kwh": 8
     }
   ],
+  "...": "22 additional hourly entries",
   "battery": {
     "capacity_kwh": 500,
     "initial_energy_kwh": 200,
@@ -971,17 +969,15 @@ Example:
 }
 ```
 
+A real request must contain exactly 24 hourly entries with hours `0` through `23`.
+
 ---
 
-## 16. Example Curl Request
+## 19. Example Curl Request
 
-Save the request payload as:
+Save a complete request as `sample_request.json`, then run:
 
-```text
-sample_request.json
-```
-
-Then run:
+### Git Bash / Linux / macOS
 
 ```bash
 curl -X POST "http://localhost:8000/optimize-energy" \
@@ -989,7 +985,7 @@ curl -X POST "http://localhost:8000/optimize-energy" \
   --data-binary "@sample_request.json"
 ```
 
-On Windows CMD:
+### Windows CMD
 
 ```cmd
 curl -X POST "http://localhost:8000/optimize-energy" ^
@@ -999,9 +995,9 @@ curl -X POST "http://localhost:8000/optimize-energy" ^
 
 ---
 
-## 17. Response Schema
+## 20. Response Example
 
-A successful response contains:
+A successful response has the following structure:
 
 ```json
 {
@@ -1015,7 +1011,7 @@ A successful response contains:
         "hours": [13, 14],
         "factor": 0.2
       },
-      "explanation": "Solar availability is reduced during the specified maintenance window."
+      "explanation": "Solar availability is reduced during the specified hours."
     },
     {
       "note_index": 1,
@@ -1024,7 +1020,7 @@ A successful response contains:
       "structured_adjustment": {
         "hours": [14, 15]
       },
-      "explanation": "Battery charging is not permitted during the specified hours."
+      "explanation": "Battery charging is unavailable during the specified hours."
     },
     {
       "note_index": 2,
@@ -1044,216 +1040,119 @@ A successful response contains:
       "battery_energy_after_kwh": 200.0
     }
   ],
-  "total_grid_kwh": 1000.0,
-  "total_cost_bdt": 10000.0,
-  "peak_grid_kwh": 200.0,
-  "plan_summary": "The schedule uses available solar first and shifts battery energy toward higher-tariff periods while respecting all operator directives."
+  "total_grid_kwh": 1234.56,
+  "total_cost_bdt": 12345.67,
+  "peak_grid_kwh": 250.0,
+  "plan_summary": "The final schedule applies the validated operator directives and minimizes grid electricity cost while satisfying all energy and battery constraints."
 }
 ```
 
-The exact numerical values in the response depend on the submitted scenario.
+The real response contains exactly 24 hourly plan entries.
 
 ---
 
-## 18. Public Sample Test
+## 21. Public Sample Testing
 
-The repository contains the official public sample cases:
+The repository contains the official public sample pack:
 
 ```text
 BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json
 ```
 
-Run the complete public validation suite:
+The pack contains 10 public sample scenarios.
+
+### Local API test
+
+Start the local API:
 
 ```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Then:
+
+```bash
+export BASE_URL="http://localhost:8000"
 python test_runner.py
 ```
 
-The test runner checks both:
+On Windows PowerShell:
 
-### LLM interpretation
+```powershell
+$env:BASE_URL="http://localhost:8000"
+python test_runner.py
+```
 
-- note relevance
-- directive type
-- affected hours
-- numeric parameters
-- `applies` semantics
-- `no_op` behavior
+### Live Render test
 
-### Optimization correctness
+```bash
+export BASE_URL="https://gridwise-llm-optimizer-mpgg.onrender.com"
+python test_runner.py
+```
 
-- exactly 24 hourly entries
-- unique hours 0–23
-- energy balance
-- solar limits
-- battery capacity
-- battery reserve
-- charge limits
-- discharge limits
-- no-charge windows
-- no-discharge windows
-- grid caps
-- end-of-day battery neutrality
-- recalculated total grid usage
-- recalculated total cost
-- recalculated peak grid usage
-- expected public-case cost
+The public validation suite currently passes:
 
-Equivalent valid optimal schedules are accepted; the implementation does not need to reproduce one exact hourly plan byte-for-byte.
+```text
+FINAL RESULT: 10/10 passed
+```
+
+Equivalent valid optimal schedules are accepted; the hourly action sequence does not need to match one reference schedule byte-for-byte.
 
 ---
 
-## 19. LLM Debugging Utility
+## 22. LLM Debugging
 
-For development-only testing of operator-note interpretation:
+For development-only interpretation testing:
 
 ```bash
 python debug_llm.py
 ```
 
-This utility focuses on the interpretation layer and helps verify semantic extraction against the public sample cases.
+This script is not part of the production API path.
 
-It is not required for running the production API.
-
----
-
-## 20. Validation Pipeline
-
-The API performs validation at multiple stages.
-
-```text
-Incoming JSON
-     │
-     ▼
-Pydantic Request Validation
-     │
-     ▼
-LLM Interpretation
-     │
-     ▼
-Deterministic Directive Validation
-     │
-     ▼
-Directive Application
-     │
-     ▼
-Linear Optimization
-     │
-     ▼
-Independent Schedule Validation
-     │
-     ▼
-Recalculate Totals
-     │
-     ▼
-JSON Response
-```
-
-This prevents a correct-looking LLM interpretation from being accepted without verifying its downstream effect on the final schedule.
-
----
-
-## 21. Independent Final Validation
-
-Before returning a successful response, the API rechecks the generated plan independently of the optimizer.
-
-The final validation verifies:
-
-```text
-24 unique hours
-        +
-Non-negative values
-        +
-Energy balance
-        +
-Solar availability
-        +
-Battery capacity
-        +
-Battery minimum reserve
-        +
-Charge rate
-        +
-Discharge rate
-        +
-No-charge windows
-        +
-No-discharge windows
-        +
-Grid caps
-        +
-End-of-day neutrality
-        +
-Recalculated total grid
-        +
-Recalculated total cost
-        +
-Recalculated peak grid
-```
-
-If the plan fails these checks, the service does not return it as a successful result.
-
----
-
-## 22. API Error Handling
-
-The API uses controlled HTTP responses.
-
-### `200`
-
-Successful health or optimization response.
-
-### `400`
-
-Malformed request or structurally invalid input.
-
-### `422`
-
-Semantically invalid request rejected by request validation.
-
-### `500`
-
-Controlled internal failure.
-
-Internal exceptions are not exposed as raw stack traces through the API.
+Avoid repeatedly running the debugging script against a rate-limited hosted LLM immediately before the full public test suite.
 
 ---
 
 ## 23. Docker
 
-The project includes a production container definition.
+### Dockerfile
+
+The container uses Python 3.11 and runs Uvicorn on port `8000`.
 
 ### Build
 
 ```bash
-docker build -t gridwise-llm:latest .
+docker build -t gridwise-llm:1.0.0 .
 ```
 
 ### Run
 
+First configure environment variables:
+
+```bash
+export OPENAI_API_KEY="YOUR_GROQ_API_KEY"
+export GROQ_MODEL="qwen/qwen3.8-27b"
+export LLM_TIMEOUT_SECONDS="15"
+export LLM_MAX_OUTPUT_TOKENS="300"
+export LLM_MAX_ATTEMPTS="3"
+```
+
+Then:
+
 ```bash
 docker run --rm -p 8000:8000 \
-  -e OPENAI_API_KEY="your_groq_api_key_here" \
-  -e GROQ_MODEL="qwen/qwen3.8-27b" \
-  -e LLM_TIMEOUT_SECONDS="15" \
-  -e LLM_MAX_OUTPUT_TOKENS="300" \
-  -e LLM_MAX_ATTEMPTS="3" \
-  gridwise-llm:latest
+  -e OPENAI_API_KEY \
+  -e GROQ_MODEL \
+  -e LLM_TIMEOUT_SECONDS \
+  -e LLM_MAX_OUTPUT_TOKENS \
+  -e LLM_MAX_ATTEMPTS \
+  gridwise-llm:1.0.0
 ```
 
-Windows PowerShell:
+### Docker health test
 
-```powershell
-docker run --rm -p 8000:8000 `
-  -e OPENAI_API_KEY="your_groq_api_key_here" `
-  -e GROQ_MODEL="qwen/qwen3.8-27b" `
-  -e LLM_TIMEOUT_SECONDS="15" `
-  -e LLM_MAX_OUTPUT_TOKENS="300" `
-  -e LLM_MAX_ATTEMPTS="3" `
-  gridwise-llm:latest
-```
-
-### Health check
+In another terminal:
 
 ```bash
 curl http://localhost:8000/health
@@ -1267,37 +1166,74 @@ Expected:
 }
 ```
 
-The container binds the service to:
+### Docker public-sample test
 
-```text
-0.0.0.0:8000
+With the container running:
+
+```bash
+export BASE_URL="http://localhost:8000"
+python test_runner.py
 ```
+
+The Dockerized application should pass the same validation suite as the local application.
 
 ---
 
-## 24. Deployment
+## 24. Docker Fallback Image
 
-The service can be deployed on a public HTTP hosting platform that supports Python web services or containers.
-
-Required production behavior:
+### Image
 
 ```text
-GET  /health
-POST /optimize-energy
+gridwise-llm:1.0.0
 ```
 
-The judge must be able to access the service without:
+### Image digest
 
-- login
-- VPN
-- manual approval
-- private-network access
+```text
+gridwise-llm@sha256:155998ac692581867b516f7a158589d5e274024e7af86c381e5a0003a68a1ed6
+```
 
-The deployed service should remain reachable throughout the evaluation period.
+### Local pull/run
 
-### Production environment variables
+```bash
+docker pull gridwise-llm:1.0.0
+```
 
-Configure the variables through the hosting provider's secret/environment-variable system:
+For the final hackathon registry submission, use the registry-qualified reference after the image is pushed to Docker Hub or GHCR.
+
+Example format:
+
+```text
+<REGISTRY_NAMESPACE>/gridwise-llm:1.0.0
+```
+
+or:
+
+```text
+<REGISTRY_NAMESPACE>/gridwise-llm@sha256:155998ac692581867b516f7a158589d5e274024e7af86c381e5a0003a68a1ed6
+```
+
+The actual registry namespace should be the Docker Hub or GHCR namespace used for the submission.
+
+---
+
+## 25. Render Deployment
+
+The production deployment is hosted on Render.
+
+### Build Command
+
+```bash
+pip install -r requirements.txt
+```
+
+### Start Command
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+### Required environment variables
 
 ```text
 OPENAI_API_KEY
@@ -1307,76 +1243,69 @@ LLM_MAX_OUTPUT_TOKENS
 LLM_MAX_ATTEMPTS
 ```
 
-Do not hard-code the actual API key into source code or Docker images.
-
----
-
-## 25. Performance Considerations
-
-The API is designed around the challenge's per-request limits.
-
-The optimization stage is a small 24-hour linear program, so the primary variable latency source is the external LLM request.
-
-The implementation therefore uses:
-
-- bounded LLM output
-- configurable request timeout
-- limited retries
-- deterministic post-processing
-- interpretation caching
-- lightweight linear optimization
-- final validation performed in-process
-
-Recommended production testing should measure:
+### Health Check Path
 
 ```text
-/health latency
-/optimize-energy latency
-success rate
-LLM failure rate
-repeated-request stability
+/health
+```
+
+### Production URL
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com
 ```
 
 ---
 
-## 26. Known Limitations
+## 26. Performance and Reliability
 
-### External LLM dependency
+The challenge requires the API to remain reachable during evaluation and to process valid `POST /optimize-energy` requests within the allowed request timeout.
 
-Operator-note interpretation depends on the configured LLM provider.
+The main variable-latency component is the external LLM request.
 
-Provider-side issues such as:
+The implementation therefore uses:
 
-- API availability
-- rate limits
-- quota limitations
-- network failures
+- bounded LLM output
+- configurable LLM timeout
+- limited attempts
+- deterministic validation
+- interpretation caching
+- lightweight 24-hour linear optimization
+- independent final validation
 
-can affect request latency or availability.
-
-### No runtime model training
-
-The solution does not perform model training or fine-tuning during request processing.
-
-### Fixed directive vocabulary
-
-The optimizer only supports the challenge-defined directives. Unsupported instructions are not converted into arbitrary optimization rules.
-
-### 24-hour horizon
-
-The optimization model is designed specifically for the challenge's 24-hour scheduling horizon.
-
-### Synthetic challenge data
-
-The implementation is designed for the supplied challenge scenarios and does not claim to model all real-world campus energy systems.
+Production deployment should be tested using repeated requests rather than a single request.
 
 ---
 
-## 27. Security
+## 27. Error Handling
 
-Security-sensitive data must never be committed to the repository.
+The API uses controlled error handling.
 
-### Never commit
+### `200`
+
+Successful health or optimization request.
+
+### `400`
+
+Malformed or structurally invalid request.
+
+### `422`
+
+Semantically invalid request rejected by request validation.
+
+### `500`
+
+Controlled internal service failure.
+
+Raw stack traces and secret values are not intended to be returned in API responses.
+
+---
+
+## 28. Security
+
+Never commit secrets.
+
+Do not commit:
 
 ```text
 .env
@@ -1384,47 +1313,44 @@ API keys
 access tokens
 passwords
 private credentials
-secret configuration
 ```
 
-### Recommended local setup
-
-Use:
+Do not place secrets in:
 
 ```text
-.env
+README.md
+source code
+Dockerfile
+Docker image
+API responses
+logs
 ```
 
-locally and:
+Use environment variables for runtime credentials.
 
-```text
-.env.example
-```
-
-for documentation.
-
-The `.gitignore` and `.dockerignore` files are configured to help prevent accidental inclusion of environment files and local artifacts.
+The repository contains `.env.example` only for documenting variable names and example placeholders.
 
 ---
 
-## 28. Reproducibility
+## 29. Reproducibility
 
-A clean environment can reproduce the project using:
+A fresh environment can reproduce the service with:
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
-cd GridWise
-
+cd gridwise-llm-optimizer
 python -m venv venv
 ```
 
-Activate the environment and install:
+Activate the virtual environment and install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Configure the required environment variables and start:
+Configure the documented environment variables.
+
+Start:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -1436,190 +1362,164 @@ Check:
 curl http://localhost:8000/health
 ```
 
-Then execute:
+Run the public validation suite:
 
 ```bash
+export BASE_URL="http://localhost:8000"
 python test_runner.py
-```
-
----
-
-## 29. Example End-to-End Flow
-
-Example operator notes:
-
-```text
-"Solar output will drop to about 20% from 1 PM to 3 PM."
-
-"Do not charge the battery between 2 PM and 4 PM."
-
-"The cafeteria menu changes tomorrow."
-```
-
-### Step 1 — LLM interpretation
-
-The language model maps them to:
-
-```text
-Note 0 → solar_reduction
-Note 1 → no_charge_window
-Note 2 → no_op
-```
-
-### Step 2 — Deterministic validation
-
-The application verifies:
-
-```text
-hours are valid
-factors are valid
-directive types are supported
-applies values are correct
-adjustment structures are correct
-```
-
-### Step 3 — Constraint generation
-
-The optimizer receives:
-
-```text
-Solar reduction
-+
-No-charge window
-```
-
-while the `no_op` note adds no scheduling constraint.
-
-### Step 4 — Optimization
-
-The LP minimizes:
-
-```text
-Σ(grid × tariff)
-```
-
-while satisfying all energy, battery, solar, and operator constraints.
-
-### Step 5 — Final validation
-
-The returned schedule is independently replayed and checked.
-
-### Step 6 — Response
-
-The service returns:
-
-```text
-directive_interpretation
-+
-hourly_plan
-+
-total_grid_kwh
-+
-total_cost_bdt
-+
-peak_grid_kwh
-+
-plan_summary
 ```
 
 ---
 
 ## 30. Design Philosophy
 
-GridWise deliberately separates three responsibilities:
+GridWise intentionally separates:
 
 ### Language understanding
 
-Handled by the LLM.
-
 ```text
-Human note
-↓
-Semantic interpretation
+Human operator note
+        ↓
+LLM
+        ↓
+Structured directive
 ```
 
-### Safety and correctness
-
-Handled deterministically.
+### Correctness and safety
 
 ```text
-Structured output
-↓
+Structured directive
+        ↓
 Schema validation
-↓
-Guardrails
+        ↓
+Deterministic guardrails
 ```
 
 ### Mathematical scheduling
 
-Handled by the optimizer.
-
 ```text
 Validated directives
-↓
+        ↓
 Optimization constraints
-↓
-Lowest-cost valid schedule
+        ↓
+Valid low-cost schedule
 ```
 
-This separation reduces the chance that an LLM can directly produce an invalid mathematical schedule.
+### Final verification
+
+```text
+Generated schedule
+        ↓
+Independent replay/checks
+        ↓
+Final API response
+```
+
+The optimizer never receives an unvalidated natural-language instruction directly.
 
 ---
 
-## 31. Technology Stack
+## 31. Key Implementation Decisions
 
-| Component | Technology |
+### LLM-assisted directive extraction
+
+The system uses a language-capable model to interpret operator notes so that paraphrased instructions can map to the same supported directive.
+
+### Deterministic guardrails
+
+The LLM is not trusted to enforce challenge constraints by itself. Structured output is checked before it influences optimization.
+
+### Linear programming
+
+The 24-hour scheduling problem is solved with SciPy's `linprog`, allowing the service to minimize grid cost while enforcing energy and battery constraints.
+
+### Independent validation
+
+The final plan is checked again after optimization to make sure the returned JSON itself satisfies the required rules.
+
+### Caching
+
+Repeated identical interpretation requests can reuse cached structured interpretation instead of unnecessarily calling the model again.
+
+---
+
+## 32. Known Limitations
+
+### External LLM dependency
+
+Operator-note interpretation depends on the configured LLM provider.
+
+Provider-side limitations such as:
+
+- API availability
+- quota
+- rate limits
+- network failures
+
+may affect request latency or availability.
+
+### Fixed directive vocabulary
+
+Only the challenge-defined directives are supported.
+
+### 24-hour horizon
+
+The optimizer is specifically designed for the 24-hour challenge horizon.
+
+### Synthetic data
+
+The implementation is designed for the supplied synthetic challenge scenarios and is not intended to represent every real-world campus energy system.
+
+### No runtime training
+
+The service does not require model training or fine-tuning during evaluation.
+
+---
+
+## 33. Challenge Compliance
+
+The implementation is designed to comply with the GridWise preliminary requirements:
+
+- `GET /health` endpoint
+- `POST /optimize-energy` endpoint
+- LLM-based `operator_notes` interpretation
+- One interpretation entry per note
+- Supported directive vocabulary
+- Deterministic LLM-output validation
+- Directive application before optimization
+- Exactly 24 hourly plan entries
+- Energy balance
+- Solar availability constraints
+- Battery capacity and reserve constraints
+- Charge/discharge rate limits
+- Directive-specific windows and grid caps
+- End-of-day battery neutrality
+- Recalculated grid usage, cost, and peak grid
+- Controlled API errors
+- Environment-based secret handling
+- Docker fallback support
+- Local public-sample validation
+
+---
+
+## 34. Final Verification Status
+
+| Component | Status |
 |---|---|
-| API framework | FastAPI |
-| Language | Python 3.11 |
-| Validation | Pydantic |
-| LLM client | OpenAI-compatible Python SDK |
-| LLM provider | Groq |
-| LLM model | Qwen 3.8 27B |
-| Optimization | SciPy `linprog` |
-| Numerical computing | NumPy |
-| HTTP client/testing | Requests |
-| ASGI server | Uvicorn |
-| Containerization | Docker |
+| GitHub repository | Ready |
+| Render deployment | Live |
+| Render `/health` | Working |
+| Public sample suite | `10/10 passed` |
+| Docker image build | Successful |
+| Docker image | `gridwise-llm:1.0.0` |
+| Docker image digest | `sha256:155998ac692581867b516f7a158589d5e274024e7af86c381e5a0003a68a1ed6` |
+| Live API | `https://gridwise-llm-optimizer-mpgg.onrender.com` |
 
 ---
 
-## 32. Important Challenge Compliance Notes
+## 35. Quick Reference
 
-The implementation is designed around the canonical GridWise challenge rules:
-
-- `GET /health` is implemented.
-- `POST /optimize-energy` is implemented.
-- Operator notes are interpreted through a language-capable generative model.
-- Every note produces one interpretation entry.
-- Supported directive types are explicitly constrained.
-- LLM output is deterministically validated.
-- Valid directives are applied to the optimizer.
-- The final plan contains 24 hours.
-- Energy balance is enforced.
-- Battery limits are enforced.
-- Solar limits are enforced.
-- Operator windows are enforced.
-- Final battery energy returns to the initial level.
-- Totals are recalculated from the returned hourly plan.
-- The API does not expose raw stack traces through successful/failure responses.
-- Secrets are not intended to be included in the repository or Docker image.
-
----
-
-## 33. License
-
-This project was developed as a hackathon submission for:
-
-**BUP CSE Fest 2026 Hackathon — GridWise**
-
-All challenge-specific data and materials are used only for the intended hackathon evaluation and development purposes.
-
----
-
-## 34. Quick Reference
-
-### Start locally
+### Run locally
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -1631,41 +1531,76 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 curl http://localhost:8000/health
 ```
 
-### Optimize
+### Run local public tests
 
 ```bash
-curl -X POST "http://localhost:8000/optimize-energy" \
-  -H "Content-Type: application/json" \
-  --data-binary "@sample_request.json"
-```
-
-### Run public tests
-
-```bash
+export BASE_URL="http://localhost:8000"
 python test_runner.py
 ```
 
-### Build Docker image
+### Test Render
 
 ```bash
-docker build -t gridwise-llm:latest .
+export BASE_URL="https://gridwise-llm-optimizer-mpgg.onrender.com"
+python test_runner.py
 ```
 
-### Run Docker image
+### Build Docker
+
+```bash
+docker build -t gridwise-llm:1.0.0 .
+```
+
+### Run Docker
 
 ```bash
 docker run --rm -p 8000:8000 \
-  -e OPENAI_API_KEY="your_groq_api_key_here" \
-  -e GROQ_MODEL="qwen/qwen3.8-27b" \
-  -e LLM_TIMEOUT_SECONDS="15" \
-  -e LLM_MAX_OUTPUT_TOKENS="300" \
-  -e LLM_MAX_ATTEMPTS="3" \
-  gridwise-llm:latest
+  -e OPENAI_API_KEY \
+  -e GROQ_MODEL \
+  -e LLM_TIMEOUT_SECONDS \
+  -e LLM_MAX_OUTPUT_TOKENS \
+  -e LLM_MAX_ATTEMPTS \
+  gridwise-llm:1.0.0
+```
+
+### Live API
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com
 ```
 
 ---
 
-## 35. Final Summary
+## 36. Submission Checklist
+
+Before final submission, verify:
+
+```text
+[ ] GET /health returns {"status":"ok"}
+[ ] POST /optimize-energy returns the exact response schema
+[ ] Render endpoint is reachable from outside the development machine
+[ ] Public sample suite passes
+[ ] Repeated requests remain stable
+[ ] No API key is committed to the repository
+[ ] No secrets are baked into the Docker image
+[ ] Docker image can be pulled and started
+[ ] README contains setup instructions
+[ ] README contains environment-variable names
+[ ] README identifies LLM provider/model
+[ ] README explains LLM role
+[ ] README explains deterministic guardrails
+[ ] README explains optimizer/solver
+[ ] README contains API examples
+[ ] README contains public-sample test commands
+[ ] README contains Docker fallback instructions
+[ ] README contains dependencies and limitations
+[ ] 3-minute solution video is prepared
+[ ] GitHub repository visibility follows the official event rule
+```
+
+---
+
+## 37. Final Summary
 
 GridWise combines:
 
@@ -1679,9 +1614,9 @@ Linear programming
 Independent schedule validation
 ```
 
-to transform natural-language campus instructions into a valid, low-cost 24-hour energy schedule.
+to transform natural-language campus operating instructions into a valid and cost-efficient 24-hour energy schedule.
 
-The core execution path is:
+Final execution path:
 
 ```text
 Operator Notes
@@ -1690,13 +1625,46 @@ Qwen 3.8 27B
       ↓
 Structured Directives
       ↓
-Deterministic Validation
+Deterministic Guardrails
       ↓
-SciPy Linear Program
+SciPy Linear Programming
       ↓
-24-Hour Energy Plan
+24-Hour Energy Schedule
       ↓
 Independent Validation
       ↓
 Final JSON API Response
 ```
+
+### Live API
+
+```text
+https://gridwise-llm-optimizer-mpgg.onrender.com
+```
+
+### Docker image digest
+
+```text
+gridwise-llm@sha256:155998ac692581867b516f7a158589d5e274024e7af86c381e5a0003a68a1ed6
+```
+
+---
+
+## 38. Credits and External Technologies
+
+The implementation uses publicly available software libraries, frameworks, SDKs, and APIs including:
+
+- Python
+- FastAPI
+- Pydantic
+- NumPy
+- SciPy
+- Uvicorn
+- Requests
+- OpenAI-compatible Python SDK
+- Groq API
+- Qwen 3.8 27B
+- Docker
+- Render
+
+These technologies are used as implementation dependencies; the GridWise application logic, directive handling, validation flow, and optimization pipeline are implemented for this challenge.
