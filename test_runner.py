@@ -8,7 +8,8 @@ FILE_NAME = (
     "BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json"
 )
 
-BASE_URL = (
+BASE_URL = os.getenv(
+    "BASE_URL",
     "http://localhost:8000"
 )
 
